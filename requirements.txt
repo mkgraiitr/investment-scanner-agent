@@ -1,0 +1,9 @@
+langchain
+langchain-core
+langgraph
+langchain-ollama
+langchain-mcp-adapters
+mcp
+ddgs
+yfinance
+streamlit

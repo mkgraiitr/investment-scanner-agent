@@ -1,0 +1,51 @@
+"""
+Streamlit UI for the Investment Trends Scanner.
+
+One page: a question box, an "Ask" button, and a read-only answer box.
+Uses the same build_agent()/ask() API as run.py -- this is just a
+different front end on top of the same agent.
+
+Run from the repo root (with your venv active):
+    streamlit run app.py
+"""
+
+import asyncio
+import uuid
+
+import streamlit as st
+
+from investment_scanner import ask, build_agent
+
+st.set_page_config(page_title="Investment Trends Scanner", page_icon="📈")
+
+
+@st.cache_resource(show_spinner="Starting agent (Ollama + MCP server)...")
+def get_agent():
+    return asyncio.run(build_agent())
+
+
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = str(uuid.uuid4())
+if "answer" not in st.session_state:
+    st.session_state.answer = ""
+
+st.title("Investment Trends Scanner")
+st.caption(
+    "Educational demo -- news/trend summarizer for equities and ETFs only. "
+    "Not financial advice."
+)
+
+question = st.text_area(
+    "Question",
+    placeholder="e.g. What's the latest news on Nvidia and semiconductor ETFs?",
+    height=100,
+)
+
+if st.button("Ask", type="primary") and question.strip():
+    agent = get_agent()
+    with st.spinner("Thinking..."):
+        st.session_state.answer = asyncio.run(
+            ask(agent, question, thread_id=st.session_state.thread_id)
+        )
+
+st.text_area("Answer", value=st.session_state.answer, height=300, disabled=True)
