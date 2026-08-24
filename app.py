@@ -18,6 +18,19 @@ from investment_scanner import ask, build_agent
 
 st.set_page_config(page_title="Investment Trends Scanner", page_icon="📈")
 
+st.markdown(
+    """
+    <style>
+    textarea:disabled {
+        color: #fafafa !important;
+        -webkit-text-fill-color: #fafafa !important;
+        opacity: 1 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 @st.cache_resource(show_spinner="Starting agent (Ollama + MCP server)...")
 def get_agent():
