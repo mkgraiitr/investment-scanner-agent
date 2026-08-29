@@ -10,11 +10,13 @@ not a financial advisor -- it never recommends buying or selling anything.
 ```
 investment-scanner-agent/
 ├── README.md
+├── NOTES.md
 ├── LICENSE
 ├── .gitignore
 ├── requirements.txt
 ├── run.py                       # entry point / demo script (hardcoded questions)
 ├── app.py                       # Streamlit UI (question box -> answer box)
+├── market_log.md                # generated on first run -- the news cache (gitignored)
 └── investment_scanner/          # the package
     ├── __init__.py              # exposes build_agent(), ask()
     ├── agent.py                 # the agent: tools, system prompt, create_agent
@@ -115,6 +117,22 @@ the same conversation memory.
 5. `MemorySaver` gives the agent per-`thread_id` memory, so calling `ask()`
    twice with the same `thread_id` lets it recall the earlier turn.
 
+## The news cache: market_log.md
+
+`scan_market_news` checks `market_log.md` (created at the repo root on
+first run) before searching. If it finds an entry for the same query
+newer than `CACHE_FRESHNESS_HOURS` (4 hours by default, set in
+`agent.py`), it returns that instead of making a new network call;
+otherwise it searches live and appends the result as a new dated entry.
+This is deliberately separate from `MemorySaver`: `MemorySaver` remembers
+a *conversation* in RAM for as long as the process is running;
+`market_log.md` remembers *search results* on disk, across separate runs,
+until they go stale. `get_stock_snapshot` is intentionally NOT cached the
+same way -- a 4-hour-old price is just wrong, unlike a 4-hour-old
+headline. The file is gitignored by default since it's generated runtime
+state, not source -- remove that line from `.gitignore` if you'd rather
+keep a version-controlled history of what the agent has searched.
+
 ## Moving to LangGraph
 
 The bottom of `investment_scanner/agent.py` has a fully commented-out
@@ -137,8 +155,11 @@ section (and stop calling `build_agent`) and build from there.
 - Not every Ollama model supports tool calling; if the agent seems to
   ignore your tools entirely, double check `OLLAMA_MODEL` in `agent.py` is
   set to one that does.
-
-
+- The `market_log.md` cache matches queries by exact normalized text
+  (case/whitespace-insensitive only) -- asking the same thing in
+  differently-worded ways still counts as separate cache entries and
+  triggers separate searches. It also only grows; nothing prunes old
+  entries from the file over time.
 
 ## License
 

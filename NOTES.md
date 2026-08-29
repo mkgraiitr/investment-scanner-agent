@@ -2,38 +2,86 @@
 
 A record of the design decisions and reasoning behind this project, kept
 alongside the code so the "why" travels with the "what" on GitHub. Written
-as a learning log from building an AI agent with free, local tooling.
+as a learning log from building an AI agent with free, local tooling --
+and as a plain-language guide to what an AI agent actually is, using this
+project as the working example throughout.
 
-## 1. What an agent actually is
+## 1. What an agent actually is: Model + Tools + Memory + Loop
 
-An agent is a loop wrapped around a language model: instead of answering
-once, the model repeatedly decides what to do next, takes an action,
-observes the result, and decides again until the task is done. This
-pattern is often called **ReAct** (Reason + Act). Four pieces make it
-work:
+An agent is a loop wrapped around a language model: instead of answering a
+question once, the model repeatedly decides what to do next, takes an
+action, observes the result, and decides again -- until the task is
+actually done. This pattern is often called **ReAct** (Reason + Act). Four
+things make it possible, and this project uses all four:
 
-- **The model** -- needs function/tool-calling ability: the capacity to
-  output a structured request like `{"tool": "search", "args": {...}}`
-  instead of just free text.
-- **Tools** -- functions the model can invoke (search, a calculator, an
-  API call, file I/O). Each needs a clear name, description, and input
-  schema; the description is the *only* thing the model sees when
-  deciding whether/how to call it, so it has to read like real
-  documentation.
-- **Memory** -- short-term (the running conversation fed back in each
-  loop) and optionally long-term (external storage the agent can read/
-  write across sessions).
-- **Orchestration loop** -- the control logic: send state to the model,
-  execute any requested tool call, append the result, repeat until a
-  final answer or a stop condition (max steps, timeout).
+- **Model** -- the reasoning engine. It needs function/tool-calling
+  ability: the capacity to output a structured request like
+  `{"tool": "search", "args": {...}}` instead of just free text. In this
+  project, that's a local Ollama model (`llama3.1` by default) via
+  `ChatOllama` -- no API key, no cost, runs entirely on your own machine.
+- **Tools** -- functions the model can invoke to actually touch the world
+  (search, a calculator, an API call, file I/O). Each needs a clear name,
+  description, and input schema; the description is the *only* thing the
+  model sees when deciding whether/how to call it, so it has to read like
+  real documentation. This project has two: `scan_market_news` (a local
+  function using free DuckDuckGo search) and `get_stock_snapshot` (loaded
+  from a small MCP server backed by free Yahoo Finance data).
+- **Memory** -- what the agent remembers, and for how long. Short-term is
+  the running conversation, fed back into the model on every turn of the
+  loop. Long-term is anything that survives past one run -- external
+  storage the agent can read and write across sessions. This project has
+  both: `MemorySaver` gives it short-term, per-conversation memory, and
+  `market_log.md` (Section 4) gives it real long-term memory -- a plain
+  file on disk that outlives the process.
+- **Loop** -- the control logic that actually runs the above three in a
+  cycle: send the current state to the model, execute any tool call it
+  requests, feed the result back in, repeat until the model gives a final
+  answer or a stop condition is hit (max steps, timeout). This is the one
+  piece you genuinely can't remove and still call it an agent -- without
+  it, the model just answers once and stops, which is a chatbot with tools
+  bolted on, not an agent. In this project, `create_agent()` builds this
+  loop for you as a LangGraph graph (model -> tool -> model, looping) --
+  you never have to write it by hand.
 
-For complex tasks, agents often add a **planning** step (break the goal
-into subtasks first) and **guardrails** (iteration limits, permission
-checks, human-approval steps) once they start taking real-world actions.
+Two more things show up once tasks get harder, but they're supporting
+layers, not core pillars: **planning** (breaking a goal into subtasks
+before acting) and **guardrails** (iteration limits, permission checks,
+human-approval steps before risky actions). A simple task doesn't need
+either; they get added as the task or the risk grows.
 
 This is all vendor-agnostic -- any frontier model (OpenAI, Anthropic,
-Google, or open-weight models like Llama/Qwen) can fill the "reasoning
-engine" role. The framework around it doesn't change much by provider.
+Google, or an open-weight model like Llama or Qwen) can fill the
+"reasoning engine" role. The framework around it barely changes by
+provider.
+
+### A quick word on automation (cron isn't one of the four)
+
+You'll eventually want this agent to run on its own -- once a day, once an
+hour -- and Section 6 covers exactly how (cron, launchd, a scheduler). But
+it's worth being clear about what that layer actually is: cron doesn't
+make a script more of an agent, it just decides *when* an already-complete
+agent gets invoked. A cron job calling this script hourly is the same
+relationship as a `for` loop calling a Python function ten times -- the
+function isn't "more of a function" for being called on a schedule.
+Automation is a deployment decision, not part of what makes something an
+agent in the first place. Worth knowing, not worth dwelling on.
+
+### Other formulas you'll see for the same idea
+
+Different explanations name these same four things differently. Two common
+ones, and how they map:
+
+| Elsewhere | Maps to | Note |
+|---|---|---|
+| LLM / "Core" | Model | Same thing, different word |
+| Shell / "Interface Layer" tool connectors | Tools | Shell is just the *specific* tool a CLI/coding agent uses to touch the world (running commands) -- other agents use search APIs, database calls, etc. instead |
+| File System / "Memory Layer" | Memory | Some framings split this further into short-term, long-term (often a vector database), and episodic (logs of past runs) -- a useful refinement. This project's `market_log.md` is a concrete long-term/episodic example, just built as a plain file instead of a vector index (Section 4) |
+| Orchestrator / control loop | Loop | Often the one piece left unnamed when people list "LLM + Shell + File System + Cron" -- easy to miss since it's implicit in "LLM," but it's what actually turns a tool call and a memory file into an agent's action, rather than just a tool call and a file sitting next to each other |
+| Cron / Automation | *(not one of the four)* | Shows up in some formulas as a fourth ingredient, but per above it's a deployment concern, not an architectural one |
+
+Whichever formula you run into, it's almost always these same four ideas
+wearing different names, sometimes with a deployment detail (like Cron)
+mixed in for good measure.
 
 ## 2. Why LangChain, and how it fits together
 
@@ -115,6 +163,27 @@ Memory uses `MemorySaver` (in-process only -- state resets when the
 script exits), keyed by `thread_id`, so multiple questions in the same run
 can build on each other.
 
+### File System as memory, for real this time
+
+Section 6 below flagged that `MemorySaver` doesn't actually give this
+project a File-System-backed memory -- it's RAM only, gone when the
+process exits. We closed that gap: `scan_market_news` now checks
+`market_log.md` (repo root) before searching, and appends a new dated
+entry after every live search. A query found in the file within the last
+`CACHE_FRESHNESS_HOURS` (4h default) is returned straight from disk, no
+network call; older than that, and it's treated as a miss and re-searched.
+
+This is a genuinely different kind of memory from `MemorySaver`, not a
+duplicate of it: `MemorySaver` remembers a conversation (what did we
+already say to each other), scoped to one running process. `market_log.md`
+remembers search results (what did we already find out), persisted on
+disk, surviving across completely separate runs of `run.py` on different
+days. `get_stock_snapshot` deliberately does NOT get this treatment --
+caching a price for 4 hours would make the tool actively wrong, whereas a
+4-hour-old headline is usually still a fine answer. Matching is exact
+(case/whitespace-normalized) text, so differently-phrased repeat questions
+still count as new searches -- a known, accepted limitation, not a bug.
+
 ## 5. Project layout
 
 ```
@@ -125,6 +194,7 @@ investment-scanner-agent/
 ├── .gitignore
 ├── requirements.txt
 ├── run.py                 # entry point / demo script
+├── market_log.md          # generated on first run -- news cache (gitignored)
 └── investment_scanner/
     ├── __init__.py        # exposes build_agent(), ask()
     ├── agent.py            # tools, system prompt, create_agent
@@ -156,6 +226,10 @@ agent-specific wrinkle: decide whether repeated runs should share a
 `thread_id` (continued memory across runs) or start fresh each time, and
 remember Ollama itself needs to be running in the background before a
 scheduled job can reach it.
+
+Whichever mechanism you pick, remember it's just the trigger -- the agent
+itself (Section 1) is exactly as much of an agent whether it's invoked by
+cron, by hand from a terminal, or by clicking Ask in `app.py`.
 
 ## 7. Tuning prompts for this agent
 

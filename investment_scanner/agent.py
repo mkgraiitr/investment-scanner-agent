@@ -21,21 +21,39 @@ Architecture:
 Tools:
   1. scan_market_news   -- free DuckDuckGo news search (no API key, no
                             cost), scoped by its docstring to equities/ETF
-                            topics.
+                            topics. Backed by a local file cache -- see
+                            "File System as memory" below.
   2. get_stock_snapshot -- loaded from a separate MCP server
                             (mcp_server.py, in this same package) over
                             stdio. This is the one MCP use case for this
                             project: a live price snapshot tool that lives
                             in its own process, wired in the same way
                             you'd wire up any third-party MCP server.
+                            Deliberately NOT cached -- a stale price is a
+                            wrong price, unlike a stale headline.
+
+File System as memory: scan_market_news checks market_log.md (in the repo
+root) before searching. If it finds an entry for the same query newer than
+CACHE_FRESHNESS_HOURS, it returns that instead of hitting the network --
+if not, it searches live and appends the result for next time. This is
+separate from MemorySaver below: MemorySaver remembers a *conversation*
+in RAM for as long as the process is alive; market_log.md remembers
+*search results* on disk, across runs, until they go stale.
 
 Model: a local Ollama model -- no API key, no per-token cost, runs
 entirely on your own machine. You need Ollama installed and a
 tool-calling-capable model pulled first:
     ollama pull llama3.1
 (qwen2.5 and mistral-nemo are alternatives that also support tool calling.)
+
+Config: OLLAMA_MODEL, LOG_PATH, and CACHE_FRESHNESS_HOURS are loaded from
+config.ini in the repo root (see config.py) -- edit that file to change
+them, no code changes needed. Defaults match the values above if the file
+or a key is missing.
 """
 
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ddgs import DDGS
@@ -45,8 +63,11 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.memory import MemorySaver
 
-OLLAMA_MODEL = "llama3.1"  # must be a tool-calling-capable model you've pulled
+from investment_scanner.config import CACHE_FRESHNESS_HOURS, LOG_PATH, OLLAMA_MODEL
+
 MCP_SERVER_PATH = str(Path(__file__).parent / "mcp_server.py")
+
+CACHE_NOTICE = "_(served from market_log.md -- no new search performed)_"
 
 SYSTEM_PROMPT = """\
 You are an Investment Trends Scanner, scoped ONLY to equities (stocks) and \
@@ -70,8 +91,67 @@ purposes only and is not financial advice.
 
 
 # ---------------------------------------------------------------------------
-# Tool 1: free news search, scoped to equities/ETFs by its docstring
+# Tool 1: free news search, scoped to equities/ETFs by its docstring.
+# Backed by a market_log.md file cache -- see module docstring.
 # ---------------------------------------------------------------------------
+
+def _normalize(text: str) -> str:
+    """Loose match key: case/whitespace-insensitive, nothing fancier."""
+    return " ".join(text.strip().lower().split())
+
+
+def _read_cached_news(query: str):
+    """
+    Return a still-fresh cached result for this exact query from
+    market_log.md, or None if there isn't one (never searched, or the
+    only entries are older than CACHE_FRESHNESS_HOURS).
+    """
+    if not LOG_PATH.exists():
+        return None
+
+    text = LOG_PATH.read_text(encoding="utf-8")
+    blocks = re.split(r"(?m)^## Query: ", text)[1:]
+    norm_query = _normalize(query)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=CACHE_FRESHNESS_HOURS)
+
+    for block in reversed(blocks):  # most recently appended entry first
+        header, _, rest = block.partition("\n")
+        if _normalize(header.strip().strip('"')) != norm_query:
+            continue
+        ts_match = re.search(r"_Searched: (.+?)_", rest)
+        if not ts_match:
+            continue
+        try:
+            searched_at = datetime.fromisoformat(ts_match.group(1))
+        except ValueError:
+            continue
+        if searched_at < cutoff:
+            continue  # a match, but too old -- treat as a cache miss
+        results = rest.split("_\n", 1)[-1].split("\n---")[0].strip()
+        return results or None
+
+    return None
+
+
+def _write_cached_news(query: str, results: str) -> None:
+    """Append this search's results to market_log.md as a new dated entry."""
+    is_new_file = not LOG_PATH.exists()
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+        if is_new_file:
+            f.write(
+                "# Market News Log\n\n"
+                "A local cache of past `scan_market_news` searches -- this "
+                "file IS this agent's File-System-backed memory. Entries "
+                f"older than {CACHE_FRESHNESS_HOURS}h are ignored and "
+                "re-searched automatically; nothing here is ever edited "
+                "in place, only appended.\n\n---\n\n"
+            )
+        f.write(
+            f'## Query: "{query}"\n'
+            f'_Searched: {datetime.now(timezone.utc).isoformat(timespec="seconds")}_\n\n'
+            f"{results}\n\n---\n\n"
+        )
+
 
 @tool
 def scan_market_news(query: str, max_results: int = 5) -> str:
@@ -87,6 +167,10 @@ def scan_market_news(query: str, max_results: int = 5) -> str:
             ETF outflows" or "Fed rate decision impact on equities".
         max_results: How many headlines to return (default 5).
     """
+    cached = _read_cached_news(query)
+    if cached is not None:
+        return cached + "\n\n" + CACHE_NOTICE
+
     try:
         results = DDGS().news(
             query=query, region="us-en", safesearch="off", max_results=max_results
@@ -105,7 +189,10 @@ def scan_market_news(query: str, max_results: int = 5) -> str:
         url = r.get("url", "")
         snippet = r.get("body", "")
         lines.append(f"- [{date}] {title} ({source}) -- {snippet}\n  {url}")
-    return "\n".join(lines)
+    output = "\n".join(lines)
+
+    _write_cached_news(query, output)
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -145,11 +232,24 @@ async def build_agent():
 
 
 async def ask(agent, message: str, thread_id: str = "scanner-demo"):
+    """
+    Returns (answer, used_cache). used_cache is True if any tool call in
+    this turn served a result from market_log.md instead of a live search
+    -- detected directly from the tool's own output rather than trusting
+    the model to mention it, since a small local model may summarize the
+    cache notice away.
+    """
     result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": message}]},
         config={"configurable": {"thread_id": thread_id}},
     )
-    return result["messages"][-1].content
+    messages = result["messages"]
+    used_cache = any(
+        getattr(m, "name", None) == "scan_market_news"
+        and CACHE_NOTICE in (m.content or "")
+        for m in messages
+    )
+    return messages[-1].content, used_cache
 
 
 # =============================================================================

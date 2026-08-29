@@ -41,6 +41,8 @@ if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
 if "answer" not in st.session_state:
     st.session_state.answer = ""
+if "used_cache" not in st.session_state:
+    st.session_state.used_cache = False
 
 st.title("Investment Trends Scanner")
 st.caption(
@@ -57,8 +59,11 @@ question = st.text_area(
 if st.button("Ask", type="primary") and question.strip():
     agent = get_agent()
     with st.spinner("Thinking..."):
-        st.session_state.answer = asyncio.run(
+        st.session_state.answer, st.session_state.used_cache = asyncio.run(
             ask(agent, question, thread_id=st.session_state.thread_id)
         )
+
+if st.session_state.used_cache:
+    st.info("Some news came from the local cache (market_log.md), not a live search.")
 
 st.text_area("Answer", value=st.session_state.answer, height=300, disabled=True)

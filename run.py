@@ -22,8 +22,10 @@ async def main():
     ]
     for q in questions:
         print(f"\n=== USER: {q}")
-        answer = await ask(agent, q)
+        answer, used_cache = await ask(agent, q)
         print(f"=== AGENT: {answer}")
+        if used_cache:
+            print("--- (note: some news came from local cache, not a live search)")
 
 
 if __name__ == "__main__":
