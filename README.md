@@ -48,6 +48,23 @@ investment-scanner-agent/
 - **yfinance** pulls from Yahoo Finance's public endpoints for free, no
   account needed.
 
+## Hardware
+
+- **RAM**: the default model, `llama3.1` (8B), needs roughly 8 GB RAM to
+  run at all; 16 GB is a more comfortable baseline if you're also running
+  a browser, IDE, or Streamlit alongside it. Skip the 70B/405B `llama3.1`
+  variants unless you have serious hardware (64GB+ RAM or a strong GPU) --
+  this project assumes the 8B default.
+- **GPU**: not required. Ollama runs 8B models fine on CPU, just slower
+  per response; Apple Silicon Macs get solid performance automatically via
+  Metal, and an NVIDIA/CUDA GPU helps on other machines but isn't needed.
+- **Disk**: a few GB free for the model pull, plus normal space for the
+  Python venv and dependencies.
+- **Network**: needed for setup (`pip install`, `ollama pull`) and at
+  runtime for the two live-data tools -- `scan_market_news` (DuckDuckGo)
+  and `get_stock_snapshot` (Yahoo Finance) -- unless a cached hit avoids
+  it. Model inference itself is fully offline once the model is pulled.
+
 ## One-time setup
 
 1. Install Ollama if you haven't already -- download from
