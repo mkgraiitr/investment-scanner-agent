@@ -88,8 +88,6 @@ mixed in for good measure.
 **LangChain** is the higher-level toolkit: model integrations for every
 major provider, the `@tool` decorator for defining tools, memory/
 checkpointer helpers, and the `create_agent()` factory this project uses.
-It replaced the older `initialize_agent`/`AgentExecutor` pattern you'll
-still see in older tutorials.
 
 **LangGraph** is the lower-level execution engine underneath it -- a
 general graph/state-machine runtime for defining workflows with loops,
@@ -204,16 +202,6 @@ investment-scanner-agent/
 
 Set up with a `venv`, `pip install -r requirements.txt`, `ollama pull
 llama3.1`, then `python run.py`. Full steps are in `README.md`.
-
-### A real bug we hit
-
-`ModuleNotFoundError: No module named 'ddgs'` on first run -- caused by
-`pip install` and `python3 run.py` pointing at *different* Python
-environments (the venv wasn't activated in the shell that ran `run.py`).
-Fixed by confirming `which python3` pointed inside `.venv/` in the same
-shell before both the install and the run. Worth remembering: this is the
-single most common gotcha with any Python venv workflow, not specific to
-this project.
 
 ## 6. Running it automatically
 
