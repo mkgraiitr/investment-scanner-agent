@@ -10,6 +10,7 @@ Run from the repo root (with your venv active):
 """
 
 import asyncio
+import threading
 import uuid
 
 import streamlit as st
@@ -17,6 +18,32 @@ import streamlit as st
 from investment_scanner import ask, build_agent
 
 st.set_page_config(page_title="Investment Trends Scanner", page_icon="📈")
+
+
+def _start_background_loop() -> asyncio.AbstractEventLoop:
+    """Run one event loop forever in a background thread.
+
+    Streamlit reruns this script on every interaction. asyncio.run() opens
+    a fresh event loop each time and closes it when done -- but the agent
+    is cached across reruns (st.cache_resource) and its Ollama/MCP clients
+    lazily create async httpx connections tied to whichever loop was
+    running on first use. Once that loop is closed, reusing the agent on
+    the next question raises "RuntimeError: Event loop is closed". Running
+    every async call against one loop that never closes avoids that.
+    """
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    return loop
+
+
+@st.cache_resource(show_spinner=False)
+def get_loop():
+    return _start_background_loop()
+
+
+def run_async(coro):
+    return asyncio.run_coroutine_threadsafe(coro, get_loop()).result()
+
 
 st.markdown(
     """
@@ -34,7 +61,7 @@ st.markdown(
 
 @st.cache_resource(show_spinner="Starting agent (Ollama + MCP server)...")
 def get_agent():
-    return asyncio.run(build_agent())
+    return run_async(build_agent())
 
 
 if "thread_id" not in st.session_state:
@@ -59,7 +86,7 @@ question = st.text_area(
 if st.button("Ask", type="primary") and question.strip():
     agent = get_agent()
     with st.spinner("Thinking..."):
-        st.session_state.answer, st.session_state.used_cache = asyncio.run(
+        st.session_state.answer, st.session_state.used_cache = run_async(
             ask(agent, question, thread_id=st.session_state.thread_id)
         )
 
